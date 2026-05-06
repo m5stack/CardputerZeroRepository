@@ -1,0 +1,97 @@
+name: Validate submission
+
+# Safe PR validation: no secrets, read-only token. Checks that files added
+# under incoming/ are well-formed arm64 .deb packages. Signing + publishing
+# happens later in publish.yml after merge.
+
+on:
+  pull_request:
+    paths:
+      - 'incoming/**'
+      - '.github/workflows/validate-submission.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enumerate new debs under incoming/
+        id: enumerate
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          base=$(git merge-base origin/main HEAD)
+          added=$(git diff --name-only --diff-filter=A "$base"...HEAD -- 'incoming/*.deb' || true)
+          if [ -z "$added" ]; then
+              echo "No new .deb files under incoming/ in this PR."
+              echo "files=" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          echo "Found:"
+          printf '  %s\n' $added
+          {
+              echo 'files<<EOF'
+              printf '%s\n' $added
+              echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install tooling
+        if: steps.enumerate.outputs.files != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev
+
+      - name: Inspect each .deb
+        if: steps.enumerate.outputs.files != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              echo "::group::$f"
+              if ! [ -f "$f" ]; then
+                  echo "::error file=$f::file does not exist"
+                  fail=1
+                  echo "::endgroup::"
+                  continue
+              fi
+              # 1. Must be a valid .deb (dpkg-deb fails loudly otherwise).
+              if ! dpkg-deb -I "$f" > /tmp/ctrl.txt 2>&1; then
+                  echo "::error file=$f::dpkg-deb -I failed:"
+                  cat /tmp/ctrl.txt
+                  fail=1
+                  echo "::endgroup::"
+                  continue
+              fi
+              cat /tmp/ctrl.txt
+              # 2. Architecture must be arm64.
+              arch=$(dpkg-deb --field "$f" Architecture)
+              if [ "$arch" != "arm64" ]; then
+                  echo "::error file=$f::Architecture=$arch, expected arm64"
+                  fail=1
+              fi
+              # 3. Filename convention: <pkg>_<version>_arm64.deb
+              base=$(basename "$f")
+              if [[ ! "$base" =~ ^[a-z0-9][a-z0-9._+-]*_[A-Za-z0-9.~+:-]+_arm64\.deb$ ]]; then
+                  echo "::warning file=$f::filename '$base' does not match <pkg>_<version>_arm64.deb"
+              fi
+              # 4. Size sanity: warn if > 50 MiB.
+              size_mb=$(( $(stat -c%s "$f") / 1024 / 1024 ))
+              if [ "$size_mb" -gt 50 ]; then
+                  echo "::warning file=$f::${size_mb} MiB — large packages slow apt update"
+              fi
+              echo "::endgroup::"
+          done <<< "${{ steps.enumerate.outputs.files }}"
+          exit $fail
+
+      - name: Summary
+        if: steps.enumerate.outputs.files == ''
+        run: echo "No .deb additions in this PR — nothing to validate."

@@ -1,0 +1,200 @@
+name: Publish apt index
+
+# Runs after a merge to main. For each .deb file landing in incoming/:
+#   1. Upload it as an asset to a rolling "apt-pool" GitHub Release.
+#   2. Remove the file from incoming/ and commit.
+#   3. Regenerate dists/stable/main/binary-arm64/{Packages,Packages.gz,Release}.
+#   4. GPG-sign Release → Release.gpg, and emit clearsigned InRelease.
+#   5. Mirror dists/ + KEY.gpg + README to gh-pages for Pages serving.
+#
+# GPG key management: export a private key with `gpg --export-secret-keys --armor <fpr>`
+# and store it as secret GPG_PRIVATE_KEY, the passphrase as GPG_PASSPHRASE.
+# Public key must also be committed as KEY.gpg at the repo root so clients can verify.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'incoming/**'
+      - 'pool/**'
+      - 'KEY.gpg'
+      - '.github/workflows/publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-apt
+  cancel-in-progress: false  # don't drop a half-written index
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      POOL_TAG: apt-pool
+      POOL_URL: https://github.com/${{ github.repository }}/releases/download/apt-pool
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils gnupg
+
+      - name: Enumerate incoming/*.deb
+        id: inc
+        run: |
+          shopt -s nullglob
+          files=(incoming/*.deb)
+          if [ ${#files[@]} -eq 0 ]; then
+              echo "No .deb in incoming/; will still refresh metadata."
+              echo "count=0" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          printf 'Incoming:\n'; printf '  %s\n' "${files[@]}"
+          {
+              echo 'files<<EOF'
+              printf '%s\n' "${files[@]}"
+              echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure rolling release exists
+        if: steps.inc.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$POOL_TAG" >/dev/null 2>&1; then
+              gh release create "$POOL_TAG" \
+                  --title "Apt pool" \
+                  --notes "Rolling release; holds every .deb the apt index references."
+          fi
+
+      - name: Upload incoming/*.deb to release + stage into pool/
+        if: steps.inc.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p pool/main
+          while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              name=$(basename "$f")
+              echo "-- uploading $name"
+              gh release upload "$POOL_TAG" "$f" --clobber
+              # Keep a copy in pool/ ONLY for metadata building; removed before
+              # the final commit to avoid bloating git with .deb blobs.
+              cp "$f" "pool/main/$name"
+              # Clear incoming/ entry.
+              rm "$f"
+          done <<< "${{ steps.inc.outputs.files }}"
+
+      - name: Fetch already-released .debs into pool/ for full index
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p pool/main
+          # If the pool release already holds assets from previous runs, pull
+          # them all down so apt-ftparchive can index the complete set.
+          if gh release view "$POOL_TAG" >/dev/null 2>&1; then
+              gh release download "$POOL_TAG" --dir pool/main --pattern '*.deb' --clobber || true
+          fi
+          ls -la pool/main || true
+
+      - name: Generate Packages / Release
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p dists/stable/main/binary-arm64
+
+          # Packages: scan pool/ with file paths rewritten to point at Release assets.
+          # dpkg-scanpackages outputs "Filename: pool/main/foo.deb" — rewrite to the
+          # Release URL so apt downloads from there, not from Pages.
+          apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin="CardputerZero" \
+              -o APT::FTPArchive::Release::Label="CardputerZero" \
+              -o APT::FTPArchive::Release::Suite="stable" \
+              -o APT::FTPArchive::Release::Codename="stable" \
+              -o APT::FTPArchive::Release::Architectures="arm64" \
+              -o APT::FTPArchive::Release::Components="main" \
+              packages pool/main \
+              | sed -E "s|^Filename: pool/main/|Filename: releases/download/${POOL_TAG}/|" \
+              > dists/stable/main/binary-arm64/Packages
+
+          gzip -kf9 dists/stable/main/binary-arm64/Packages
+
+          apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin="CardputerZero" \
+              -o APT::FTPArchive::Release::Label="CardputerZero" \
+              -o APT::FTPArchive::Release::Suite="stable" \
+              -o APT::FTPArchive::Release::Codename="stable" \
+              -o APT::FTPArchive::Release::Architectures="arm64" \
+              -o APT::FTPArchive::Release::Components="main" \
+              release dists/stable \
+              > dists/stable/Release
+
+      - name: GPG sign Release → Release.gpg + InRelease
+        if: env.HAVE_GPG == '1'
+        env:
+          HAVE_GPG: ${{ secrets.GPG_PRIVATE_KEY != '' && '1' || '0' }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')
+          echo "Signing with $KEYID"
+
+          rm -f dists/stable/Release.gpg dists/stable/InRelease
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+              --passphrase-fd 0 --local-user "$KEYID" \
+              -abs -o dists/stable/Release.gpg dists/stable/Release
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+              --passphrase-fd 0 --local-user "$KEYID" \
+              --clearsign -o dists/stable/InRelease dists/stable/Release
+
+      - name: Skip signing (no key configured)
+        if: env.HAVE_GPG != '1'
+        env:
+          HAVE_GPG: ${{ secrets.GPG_PRIVATE_KEY != '' && '1' || '0' }}
+        run: |
+          echo "::warning ::GPG_PRIVATE_KEY secret not set — publishing UNSIGNED index."
+          echo "apt clients will need [trusted=yes] in sources.list until the key is configured."
+
+      - name: Clean pool/ before committing (we don't want .deb in git)
+        run: rm -rf pool/main/*.deb
+
+      - name: Commit metadata back to main
+        run: |
+          set -euo pipefail
+          git config user.name "cardputer-repo-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+              echo "No metadata changes to commit."
+              exit 0
+          fi
+          git commit -m "ci: refresh apt index ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git push origin HEAD:main
+
+      - name: Publish to gh-pages
+        run: |
+          set -euo pipefail
+          staging=$(mktemp -d)
+          cp -r dists "$staging/"
+          [ -f KEY.gpg ] && cp KEY.gpg "$staging/"
+          cp README.md "$staging/index.md"
+
+          cd "$staging"
+          git init -q -b gh-pages
+          git config user.name "cardputer-repo-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git add -A
+          git commit -q -m "publish apt index"
+          git push -qf origin gh-pages

@@ -1,0 +1,6 @@
+# Never commit raw .deb to git — they live as Release assets, not in the tree.
+# Exception: incoming/ is the PR landing zone (small, cleared on merge by CI).
+pool/main/*.deb
+*.deb
+!incoming/*.deb
+!incoming/.gitkeep
