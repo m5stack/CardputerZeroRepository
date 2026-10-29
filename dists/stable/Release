@@ -1,0 +1,23 @@
+Architectures: arm64
+Codename: stable
+Components: main
+Date: Wed, 06 May 2026 07:10:23 +0000
+Label: CardputerZero
+Origin: CardputerZero
+Suite: stable
+MD5Sum:
+ 4e2aa46ed33d6756058bf8b05fb1a898              150 Release
+ 7f68f295bcc2c4f1991bb802ee31e32f              688 main/binary-arm64/Packages
+ ba6b8981a576ebf97880e2e188f16e8a              508 main/binary-arm64/Packages.gz
+SHA1:
+ a4d557e81d104df2b8dd1211969efde28ae32fcf              150 Release
+ 2082c8d1efc6ca14a4577ad683fae1225bb1c3d8              688 main/binary-arm64/Packages
+ ccb67757ca3cc30d42ca2f7dfb93dd49db849d41              508 main/binary-arm64/Packages.gz
+SHA256:
+ bd21c7b914649ee5e2bd71e113517f701e074a941128837f40685b99eb886c10              150 Release
+ cbda207ebf7a61f7f8cb9d8821b2d642f6c0dee3ac3dedb0f11f8a548c8806c1              688 main/binary-arm64/Packages
+ 26f4db77260017a2f82a6b2ea54055ebee773e695cbc3c58c9614320c199dfa3              508 main/binary-arm64/Packages.gz
+SHA512:
+ 0ee5e2859e93a8f6e968829c7be3069c17e9e90ad85c54242d04771b5d79aaac9677647669281f57142f39c249993e0f415ace66b8f1f86ba081aa01719ac224              150 Release
+ 00373c6151cf570529147e3ab8a75c68239c9957963cae624ef13618f36de1b90b1af8b73d94f03336bb242f3aa4d57f06d65bd023bc8cc4a0f0fdea2c1d9fd2              688 main/binary-arm64/Packages
+ c64016278c9229f742927411335d1c8d5effd53ad74ee73877280e92977d3b63984fa40886fba3281f594d2ea8e7feb29d49bb7ead93bf1ee79c9d9b12ba5f1f              508 main/binary-arm64/Packages.gz

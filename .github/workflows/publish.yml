@@ -13,7 +13,9 @@ name: Publish apt index
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'ci/**'      # let bootstrap / preview branches exercise the pipeline
     paths:
       - 'incoming/**'
       - 'pool/**'
@@ -169,7 +171,7 @@ jobs:
       - name: Clean pool/ before committing (we don't want .deb in git)
         run: rm -rf pool/main/*.deb
 
-      - name: Commit metadata back to main
+      - name: Commit metadata back to the source branch
         run: |
           set -euo pipefail
           git config user.name "cardputer-repo-bot"
@@ -180,21 +182,30 @@ jobs:
               exit 0
           fi
           git commit -m "ci: refresh apt index ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
-          git push origin HEAD:main
+          # Push back to whichever branch triggered us (main or a ci/** preview).
+          git push origin HEAD:"${GITHUB_REF#refs/heads/}"
 
-      - name: Publish to gh-pages
+      - name: Publish to gh-pages (or gh-pages-preview on ci/** branches)
         run: |
           set -euo pipefail
+          # ci/** branches push to a preview branch so they never overwrite
+          # the production index. main writes straight to gh-pages.
+          case "${GITHUB_REF#refs/heads/}" in
+              main) pages_branch=gh-pages ;;
+              *)    pages_branch=gh-pages-preview ;;
+          esac
+          echo "→ target branch: $pages_branch"
+
           staging=$(mktemp -d)
           cp -r dists "$staging/"
           [ -f KEY.gpg ] && cp KEY.gpg "$staging/"
           cp README.md "$staging/index.md"
 
           cd "$staging"
-          git init -q -b gh-pages
+          git init -q -b "$pages_branch"
           git config user.name "cardputer-repo-bot"
           git config user.email "bot@users.noreply.github.com"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git add -A
-          git commit -q -m "publish apt index"
-          git push -qf origin gh-pages
+          git commit -q -m "publish apt index ($pages_branch)"
+          git push -qf origin "$pages_branch"

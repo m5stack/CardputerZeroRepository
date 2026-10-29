@@ -1,0 +1,14 @@
+Package: czrepo-hello
+Architecture: arm64
+Version: 0.1-1
+Maintainer: CardputerZero Repository <repo@m5stack.local>
+Filename: releases/download/apt-pool/czrepo-hello_0.1-1_arm64.deb
+Size: 784
+MD5sum: a4703c66a80bea45d9c45377ed6f235d
+SHA1: c3e62927584e90fb0265fd1282ac86058b45a640
+SHA256: dd80f7e4437219469afde60ecb79c80532d19e7ff1746270d322410415efcef3
+SHA512: f847524840b716e56363774663da65cd349235d08e6537cc1a02bacfa1c0d8bc542a2b8399a879bd63f6cd3f58154a025f9a7ccb9461d931d0a57fbb6b31bb9c
+Description: Bootstrap sentinel package used to validate publish.yml.
+ Ships a single file with a greeting; safe to dpkg -i on any arm64 host
+ because it only writes under /usr/share/czrepo-hello/.
+
